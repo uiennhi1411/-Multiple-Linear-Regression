@@ -1,0 +1,348 @@
+---
+title: "Project_2_GroupL"
+output: html_document
+date: "2024-05-13"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(dplyr)
+library(leaps)
+library(corrplot)
+data <- read_csv(file = "datasets/Ecommerce_Customers.csv")
+data <- data |> janitor::clean_names() 
+glimpse(data)
+```
+Câu 1:
+```{r}
+data <- subset(data, select = -c(email, address, avatar))
+head(data)
+```
+```{r}
+sum(is.na(data))
+```
+=> data không có giá trị NULL
+
+• `Email` - địa chỉ email duy nhất xác định mỗi khách hàng.
+• `Address` - địa chỉ của khách hàng.
+• `Avg.` Session Length - trung bình thời gian tương tác.
+• `Time on App` - thời gian tương tác trên mobile app.
+• `Time on Website` - thời gian tương tác trên website.
+• `Length of Membership` - thời gian là khách hàng thành viên.
+• `Yearly Amount Spent` - chi phí mua hàng trung bình năm.
+
+# Lập bảng summary cho các biến số
+```{r}
+data_stats <- data |>
+  summarise(across(where(is.numeric), list(
+    mean = mean, 
+    median = median, 
+    sd = sd, 
+    min = min, 
+    max = max,
+    iqr = IQR
+    )))
+
+data_stats_tidy <- data_stats |>
+  gather(ten, gt) |>
+  extract(ten, into = c("bien", "tk"), regex = "^(.*)_(.*)$") |>
+  spread(tk, gt) |>
+  select(bien, mean, median, sd, min, max, iqr)
+
+print.data.frame(data_stats_tidy, digits = 5)
+```
+
+```{r}
+data|>summary()
+```
+
+# Đồ thị Histogram cho biến yearly_amount_spent theo giá trị bình thường và log
+```{r}
+ggplot(data, aes(x = yearly_amount_spent)) +
+  geom_histogram(aes(fill = ..count..), bins = 30) +
+  scale_fill_gradient("count", low = "white", high = "blue") +
+  labs(title = "Yearly Amount Spent histogram", x = "Amount", y = "Count")
+```
+
+=> Giá phí mua hàng hàng năm tuân theo phân phối chuẩn
+
+# Đồ thị histogram của các biến trong data
+```{r}
+# Lấy tên của các feature từ tập dữ liệu
+num_cols = colnames(data)[sapply(data, is.numeric)]
+# Vẽ histogram cho từng feature
+for(feature in num_cols){
+  print(ggplot(data, mapping = aes(.data[[feature]])) +
+    geom_histogram(bins = 30)) +
+    labs(title = paste("Histogram of", feature),
+           x = feature,
+           y = "Frequency") +
+      theme_minimal() +
+      theme(plot.title = element_text(hjust = 0.5))
+}
+```
+Phân phối của các biến khá đồng đều
+# Vẽ ma trận hiệp phương sai (covariance matrix)
+```{r}
+numeric_columns <- data |>
+  select(where(is.numeric))
+
+corr_matrix <- cor(numeric_columns, method = "pearson")
+
+corrplot(corr_matrix)
+```
+
+Giá mua hàng hàng năm (yearly_amount_spent) tương quan mạnh avg_session_length,
+time_on_app, length_of_membership.
+
+```{r}
+column_names <- colnames(data)
+
+# Vẽ pairplot bằng vòng lặp
+for (i in 1:(length(column_names) - 1)) {
+  for (j in (i + 1):length(column_names)) {
+    # Tạo tên biến x và y dựa trên vị trí của cột
+    x_var <- column_names[i]
+    y_var <- column_names[j]
+    
+    # Tạo biểu đồ
+    plot_title <- paste("Pairplot of", x_var, "vs.", y_var)
+    print(
+      ggplot(data, aes_string(x = x_var, y = y_var)) +
+        geom_point() +
+        labs(x = x_var, y = y_var) +
+        ggtitle(plot_title) +
+        theme_minimal()
+    )
+  }
+}
+```
+=> ta thấy dữ liệu co cụm về đường thẳng hồi quy
+
+## Câu 2
+
+permutation A/B testing cho 2 trung bình 2 biến Time on app và Time on website
+```{r}
+set.seed(21)
+perm_test <- function(x, y, R, alter) {
+  n <- length(x)
+  a <- split(x, y)
+  res_perm <- numeric(R)
+  mean_A <- mean(a[[1]])
+  mean_B <- mean(a[[2]])
+  for (i in 1:R){
+    idx_a <- sample(x = 1:n, size = length(a[[1]]))
+    idx_b <- setdiff(x = 1:n, y = idx_a)
+    res_perm[i] <- mean(x[idx_a]) - mean(x[idx_b])
+  }
+  if (alter == 'left') {
+    p_value <- mean(res_perm < (mean_A - mean_B))
+  }
+  else {
+    if(alter == "right"){
+      p_value = mean(res_perm > (mean_A - mean_B))
+    }
+    else{
+      p_value = mean((abs(res_perm)) > abs((mean_A - mean_B)))
+    }
+  }
+  return (list(mean_A, mean_B, p_value))
+}
+
+## H_0: Time on app = Time on website
+## H_1: Time on app != Time on website
+perm_test(data$time_on_app, data$time_on_website, R = 1000, alter = 'left')
+```
+- p_value = 0.595, không thể bác bỏ giả thuyết H0 với mức ý nghĩa α = 0.05.
+Do đó, việc thời gian phiên làm việc với Web dài hơn so với app là không có ý nghĩa
+thống kê hay chỉ là kết quả của sự ngẫu nhiên.
+
+
+Câu 3:
+
+```{r}
+predict.regsubsets <- function(object, newdata, id_model) {
+  form <- as.formula(object$call[[2]])
+  x_mat <- model.matrix(form, newdata)
+  coef_est <- coef(object, id = id_model)
+  x_vars <- names(coef_est)
+  res <- x_mat[, x_vars] %*% coef_est
+  return(as.numeric(res))
+}
+
+find_best_num_var <- function(x, data, method, nvmax) {
+  n_data <- nrow(data)
+  k <- 5
+  folds <- sample(rep(1:k, length = n_data))
+  
+  cv_error_data_rj <- matrix(0, nrow = k, ncol = nvmax)
+  for(r in 1:k) {
+    data_train_r <- data[folds != r, ]
+    data_test_r <- data[folds == r, ]
+    out_subset_data_folds <- regsubsets(x = x, data = data_train_r,
+                                           method = method, nvmax = nvmax)
+    for(j in 1:nvmax) {
+      pred_rj <- predict(out_subset_data_folds, newdata = data_test_r, id_model = j)
+      cv_error_data_rj[r, j] <- sqrt(mean((data_test_r$yearly_amount_spent - pred_rj)^2))
+    }
+  }
+  cv_error_data <- colMeans(cv_error_data_rj)
+  return(which.min(cv_error_data))
+}
+```
+
+```{r}
+best_num_var_list <- vector(mode = "numeric", length = 100)
+for (i in 1:100) {
+  set.seed(i)
+  min_cv_error_model <- find_best_num_var(x = yearly_amount_spent~avg_session_length +
+                                  time_on_app + time_on_website + length_of_membership,
+                                  data = data,
+                    method = "exhaustive", nvmax = 4)
+  best_num_var_list[i] <- min_cv_error_model
+}
+
+median(best_num_var_list)
+```
+
+```{r}
+out_subset_2 <- regsubsets(x = yearly_amount_spent~avg_session_length +
+                                  time_on_app + time_on_website + length_of_membership,
+                           data = data, method = "exhaustive", nvmax = 4)
+summary(out_subset_2)$which[median(best_num_var_list), ]
+coef(out_subset_2, id = median(best_num_var_list))
+```
+Nhận xét:
+- Dựa vào hồi quy từng bước kết hợp với phương pháp Cross-validation trên, ta lựa
+chọn được ba biến tốt nhất cho mô hình là avg_session_length, time_on_app, length_of_membership.
+- Từ đó, có thể thấy biến time_on_website không ảnh hưởng nhiều đến kết quả, nhưng do
+mục đích của bài toán này không phải là ước lượng giá trị chi phí mua hàng trung
+bình hằng năm, mà là quyết định nên tập trung nỗ lực vào trải nghiệm ứng dụng di động
+hay trang web. Do đó, nhóm lấy luôn cả biến time_on_website để xây dựng mô hình hồi quy.
+- Mặt khác, ta gần như có thể kết luận nên đầu tư vào nền tảng mobile app.
+
+Xây dựng mô hình hồi quy tuyến tính:
+
+Chọn biến Y là yearly_amount_spent
+```{r}
+md <- lm(yearly_amount_spent ~ avg_session_length + time_on_app + time_on_website +
+           length_of_membership, data = data)
+summary(md)
+```
+Nhận xét:
+
+Giữ tất cả các biến khác cố định, khi tăng một đơn vị, ta có:
+- avg_session_length tăng yearly_amount_spent lên 26 đơn vị.
+- time_on_app tăng yearly_amount_spent lên 39 đơn vị.
+- time_on_website tăng yearly_amount_spent thêm 0,4 đơn vị.
+- length_of_membership tăng yearly_amount_spent lên 61 đơn vị.
+
+```{r}
+ggplot(data = md, mapping = aes(x = .fitted, y = .resid)) +
+  geom_point() +
+  geom_smooth(method = "loess", se = FALSE) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(x = "Fitted values", y = "Residuals") +
+  theme_bw()
+```
+
+
+-----Kiểm tra tính tuyến tính từng phần cho time_on_app
+```{r}
+# kết quả cho từng thành phần tuyến tính
+terms_md <- predict(md, type = "terms")
+head(terms_md)
+# các giá trị thặng dư từng phần
+partial_resid_md <- residuals(md, type = "partial")
+head(partial_resid_md)
+data_part_resid_md <- tibble(
+  time_on_app = data$time_on_app,
+  terms = terms_md[, "time_on_app"],
+  partial_resid = partial_resid_md[, "time_on_app"]
+)
+ggplot(data_part_resid_md, mapping = aes(time_on_app, partial_resid)) +
+  geom_point() +
+  geom_smooth(method = "loess", se = FALSE, linetype = "dashed", color = "forestgreen") +
+  geom_line(aes(x = time_on_app, y = terms), color = "blue") +
+  labs(x = "time_on_app", y = "Partial Residuals") +
+  theme_bw()
+```
+Kết quả cho thấy:
+- Đường thẳng tuyến tính (màu xanh dương) ước lượng tương đối khớp với dữ liệu.
+- Đường cong nét đứt (màu xanh lá) cho thấy xu hướng mối quan hệ tuyến tính của
+time_on_app và year_amount_spent.
+
+
+
+-----Kiểm tra tính tuyến tính từng phần cho time_on_website
+```{r}
+data_part_resid_md <- tibble(
+  time_on_website = data$time_on_website,
+  terms = terms_md[, "time_on_website"],
+  partial_resid = partial_resid_md[, "time_on_website"]
+)
+ggplot(data_part_resid_md, mapping = aes(time_on_website, partial_resid)) +
+  geom_point() +
+  geom_smooth(method = "loess", se = FALSE, linetype = "dashed", color = "forestgreen") +
+  geom_line(aes(x = time_on_website, y = terms), color = "blue") +
+  labs(x = "time_on_website", y = "Partial Residuals") +
+  theme_bw()
+```
+Kết quả cho thấy:
+- Đường thẳng tuyến tính (màu xanh dương) ước lượng không khớp với dữ liệu. Overestimate trong khoảng từ dưới 35.
+- Không có quan hệ tuyến tính giữa year_amount_spent và time_on_website trong mô hình.
+
+
+----kiểm tra tính đồng nhất phương sai
+```{r}
+ggplot(md, aes(.fitted, sqrt(abs(.stdresid)))) +
+  geom_point(na.rm = TRUE) +
+  geom_smooth(method = "loess", na.rm = TRUE, se = FALSE) +
+  labs(x = "Fitted Values", y = expression(sqrt("|Standardized residuals|"))) +
+  theme_bw()
+```
+ - Có thể thấy xu hướng của dữ liệu không xấp xỉ đường thẳng 1, ám chỉ phương sai thặng dư là không đồng nhất.
+
+-----kiểm tra điểm ngoại lai của mô hình
+```{r}
+#kiểm tra điểm ngoại lai của mô hình
+ggplot(md, aes(.hat, .stdresid)) +
+geom_point(aes(size = .cooksd)) +
+xlab("Leverage") + ylab("Standardized Residuals") +
+scale_size_continuous("Cook's Distance", range = c(1, 6)) +
+theme_bw() +
+theme(legend.position = "bottom")
+```
+
+Nhận xét:
+- Đối với những quan sát có giá trị khoảng cách Cook lớn (thường là lớn hơn 0.5 - 1),
+thường là các điểm ngoại lai (có ảnh hưởng lớn) trong mô hình.
+- Dựa vào biểu đồ Residuals vs Leverage trên, ta thấy không có các điểm ngoại lai
+gây ảnh hưởng lớn đến mô hình (giá trị khoảng cách Cook lớn nhất là 0.03, quá nhỏ
+để có thể xét là ngoại lai trong mô hình hồi quy).
+
+Câu 4: Kết luận:
+
+- Dựa vào hồi quy từng bước kết hợp với phương pháp Cross-validation trên, ta lựa
+chọn được ba biến tốt nhất cho mô hình là avg_session_length, time_on_app, length_of_membership.
+- Từ đó, có thể thấy biến time_on_website không ảnh hưởng nhiều đến kết quả, nhưng do
+mục đích của bài toán này không phải là ước lượng giá trị chi phí mua hàng trung
+bình hằng năm, mà là quyết định nên tập trung nỗ lực vào trải nghiệm ứng dụng di động
+hay trang web. Do đó, nhóm lấy luôn cả biến time_on_website để xây dựng mô hình hồi quy.
+Từ đó, ta gần như có thể kết luận nên đầu tư vào nền tảng mobile app.
+- Thời gian trên trang web (time_on_website) dường như ít ảnh hưởng đến số tiền chi
+tiêu hàng năm (yearly_amount_spent), trong khi thời gian trên ứng dụng (time_on_app)
+cho thấy mối tương quan mạnh mẽ hơn. Về mặt đó, doanh thu có được thông qua app
+dường như quan trọng hơn.
+- Tuy nhiên, thay vì loại bỏ hoàn toàn trang web, ta thấy công ty cũng có thể
+cải thiện nó để tăng doanh thu trên kênh đó. Sau đó, thực hiện lại phân tích.
+Phải nói rằng, biến số quan trọng nhất ảnh hưởng đến chi tiêu là thời hạn thành
+viên (length_of_membership).
+
+Vậy mô hình hồi quy với biến phụ thuộc là số tiền chi tiêu hàng năm của khách
+hàng (yearly_amount_spent) cho thấy nên đầu tư vào nền tảng mobile app.
